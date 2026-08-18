@@ -1,0 +1,2 @@
+# No linker overrides needed — using stable-x86_64-pc-windows-msvc toolchain
+# which picks up link.exe from VS Build Tools 2022 automatically.
