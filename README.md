@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/banner.png" alt="HangarSweep" width="520" />
+  <img src="src-tauri/icons/128x128@2x.png" alt="HangarSweep" width="96" />
 </p>
 
 <h1 align="center">HangarSweep</h1>
@@ -10,6 +10,7 @@
 </p>
 
 <p align="center">
+  <img alt="Version" src="https://img.shields.io/badge/version-0.1.0-gold" />
   <img alt="Tauri 2.0" src="https://img.shields.io/badge/Tauri-2.0-blue?logo=tauri" />
   <img alt="Rust" src="https://img.shields.io/badge/Rust-1.78+-orange?logo=rust" />
   <img alt="React 18" src="https://img.shields.io/badge/React-18-61dafb?logo=react" />
@@ -21,9 +22,9 @@
 
 ## What is HangarSweep?
 
-HangarSweep is a **native desktop application** built with [Tauri 2.0](https://tauri.app) that connects to the [EVE Online ESI API](https://esi.evetech.net) to give you a consolidated view of every tradeable asset scattered across your characters' hangars.
+HangarSweep is a **native Windows desktop application** built with [Tauri 2.0](https://tauri.app) that connects to the [EVE Online ESI API](https://esi.evetech.net) to give you a consolidated view of every tradeable asset scattered across your character's hangars.
 
-It highlights **dead capital** — stacks of items sitting in stations and citadels worth more than 500M ISK that aren't fitted to a ship or trained as a skill — so you can decide what to consolidate or sell. Once you find a location, one click formats your entire inventory into EVE's **Multibuy** format and copies it to your clipboard, ready to paste straight into the game.
+It surfaces **dead capital** — items sitting in stations and citadels that aren't fitted, skilled, or implanted — sorted by estimated ISK value. Use the **Min Value slider** to filter by threshold. Once you find a location worth hitting, one click formats your entire inventory into EVE's **Multibuy** format and copies it to your clipboard, ready to paste straight into the game.
 
 ---
 
@@ -31,21 +32,29 @@ It highlights **dead capital** — stacks of items sitting in stations and citad
 
 | Feature | Detail |
 |---|---|
-| 🔐 **EVE SSO login** | OAuth 2.0 PKCE flow — no passwords stored, no secrets in the app |
+| 🔐 **EVE SSO login** | OAuth 2.0 PKCE flow — no passwords stored, no client secret required |
 | 👥 **Multi-character** | Add as many characters as you like; switch between them instantly |
 | 📦 **Full asset sync** | Fetches all pages concurrently, respects ESI error limits |
 | 💰 **Market prices** | Pulled from ESI once per 24 hours, cached locally |
-| 🏰 **Citadel resolution** | Player structure names resolved via `POST /universe/names/` |
+| 🏷️ **Auto name resolution** | Item type names + station names resolved automatically via ESI on first sync |
+| 🏰 **Citadel resolution** | Player structure names resolved via authenticated ESI call |
 | 🔄 **Auto token refresh** | Access tokens silently refreshed before any ESI call |
+| 🎚️ **Threshold slider** | Filter locations by ISK value: Show all → 10M → 50M → … → 10B |
 | 📋 **Multibuy export** | Formats `TypeName Qty` lines → clipboard in one click |
-| 🌑 **Dark EVE theme** | Gold accents, amber ISK values, per-session state |
-| 💾 **100% local** | All data stays in a SQLite database on your machine |
+| 🌑 **Dark EVE theme** | Navy/gold palette, monospaced ISK values, glowing location dots |
+| 💾 **100% local** | All data stays in a SQLite database on your machine. Nothing phoned home. |
 
 ---
 
-## Screenshots
+## Quick Start (Windows)
 
-> *(Screenshots will be added after first successful build.)*
+1. **Download** `HangarSweep.exe` from the repo root (or [build it yourself](#building))
+2. Double-click to run — no installation needed. WebView2 is pre-installed on Windows 10/11.
+3. Click **+ Add Character**, log in via the EVE SSO browser window
+4. Click **⟳ Sync** — assets, prices, and names are fetched automatically
+5. Browse locations, click one to see assets, hit **Copy Multibuy** to copy to clipboard
+
+> On first sync, name resolution fetches item and station names from ESI. This takes a few extra seconds once, then names are cached permanently.
 
 ---
 
@@ -54,56 +63,51 @@ It highlights **dead capital** — stacks of items sitting in stations and citad
 | Layer | Technology |
 |---|---|
 | App shell | [Tauri 2.0](https://tauri.app) |
-| Backend logic | Rust (`sqlx`, `reqwest`, `tokio`, `sha2`, `base64`, `rand`) |
+| Backend | Rust — `sqlx`, `reqwest`, `tokio`, `sha2`, `rand`, `serde` |
 | Frontend | React 18 + TypeScript + Vite |
 | Database | SQLite via `sqlx` with embedded migrations |
 | Auth | EVE SSO v2 — OAuth 2.0 Authorization Code + PKCE |
 
 ---
 
-## Prerequisites
+## Building
 
-### Windows
+### Prerequisites (Windows)
 
-| Requirement | Version | Notes |
-|---|---|---|
-| **Rust** | 1.78+ | Install via [rustup.rs](https://rustup.rs) |
-| **MSVC Build Tools** | Latest | ["Desktop development with C++"](https://visualstudio.microsoft.com/visual-cpp-build-tools/) workload |
-| **Node.js** | 18+ | [nodejs.org](https://nodejs.org) |
-| **WebView2** | Any | Pre-installed on Windows 10/11; otherwise [download here](https://developer.microsoft.com/microsoft-edge/webview2/) |
+| Requirement | Notes |
+|---|---|
+| **Rust** (stable-x86_64-pc-windows-msvc) | [rustup.rs](https://rustup.rs) |
+| **VS Build Tools 2022** | "Desktop development with C++" workload |
+| **Node.js** 18+ | [nodejs.org](https://nodejs.org) |
+| **WebView2 Runtime** | Pre-installed on Windows 10 22H2+ and Windows 11 |
 
-### macOS / Linux
+### Build the exe
 
-Rust and Node.js are sufficient. Follow the [Tauri prerequisites guide](https://tauri.app/start/prerequisites/) for your distro.
-
----
-
-## Getting Started
-
-```bash
-# 1. Clone
+```powershell
 git clone git@github.com:jbaycroft/HangarSweep.git
 cd HangarSweep
-
-# 2. Install frontend dependencies
 npm install
-
-# 3. Launch in dev mode (first run compiles Rust — allow 3-5 minutes)
-npm run tauri dev
+npm run build:exe          # builds Rust + bundles React → HangarSweep.exe in project root
 ```
 
-The app window opens automatically. Click **+ Add EVE Character** to begin the login flow.
+The linker path is pinned in `.cargo/config.toml` — no PATH setup needed.
+
+### Dev mode
+
+```powershell
+npm run tauri dev          # hot-reloads frontend, recompiles Rust on change
+```
 
 ---
 
 ## EVE Developer Application
 
-HangarSweep is registered as a native application on the EVE Developer Portal. The credentials embedded in the source are for the public build. If you fork and publish your own version you **must** register a new application at https://developers.eveonline.com/applications/ with:
+HangarSweep is registered as a native application. The credentials in `src/auth.rs` are for the public build. If you fork and publish your own version, register a new app at [developers.eveonline.com](https://developers.eveonline.com/applications/) with:
 
 | Field | Value |
 |---|---|
 | Connection type | Authentication & API Access |
-| Callback URL | `http://localhost` |
+| Callback URL | `http://localhost:57423/callback` |
 | Scopes | `publicData` `esi-assets.read_assets.v1` `esi-universe.read_structures.v1` `esi-ui.open_window.v1` `esi-ui.write_waypoint.v1` |
 
 Then update `src-tauri/src/auth.rs`:
@@ -111,52 +115,27 @@ Then update `src-tauri/src/auth.rs`:
 ```rust
 pub const CLIENT_ID: &str     = "YOUR_CLIENT_ID";
 pub const CLIENT_SECRET: &str = "YOUR_CLIENT_SECRET";
+pub const REDIRECT_URI: &str  = "http://localhost:57423/callback";
 ```
-
-> **Note on the callback port:** HangarSweep listens on `http://localhost:57423/callback`. Per [RFC 8252 §7.3](https://www.rfc-editor.org/rfc/rfc8252#section-7.3), EVE SSO matches the scheme and host for loopback URIs and ignores the port, so registering `http://localhost` is sufficient.
 
 ---
 
-## SQLite Database
+## Data & Privacy
 
-The database is stored at:
+- **All data is local.** The SQLite database lives at `%APPDATA%\com.hangarsweep.desktop\hangarsweep.db`
+- No analytics, no telemetry, no external servers beyond ESI
+- EVE access tokens are stored encrypted-at-rest in the local DB and refreshed automatically
+- Uninstalling the app does not delete the database — delete the folder manually if desired
 
-| OS | Path |
-|---|---|
-| Windows | `%APPDATA%\com.hangarsweep.app\hangarsweep.db` |
-| macOS | `~/Library/Application Support/com.hangarsweep.app/hangarsweep.db` |
-| Linux | `~/.local/share/com.hangarsweep.app/hangarsweep.db` |
-
-Migrations run automatically on launch via `sqlx::migrate!`.
-
-### Schema Overview
+### Database Schema
 
 ```
-characters      — EVE character auth tokens
-assets          — Full asset ledger, replaced on each sync
+characters      — EVE character auth tokens (id, name, access_token, refresh_token, expiry)
+assets          — Full asset ledger (replaced wholesale on each sync)
 market_prices   — ESI market averages (refreshed every 24h)
-structure_cache — Resolved citadel/upwell names
-sde_types       — Item type names (from EVE SDE)
-sde_stations    — NPC station names (from EVE SDE)
-```
-
-### Loading the SDE (Optional but Recommended)
-
-Without the SDE, type and station names display as numeric IDs. To populate them:
-
-1. Download the [Fuzzwork SDE SQLite mirror](https://www.fuzzwork.co.uk/dump/latest/eve.db.bz2) (`eve.db`)
-2. Open your HangarSweep database with any SQLite client and run:
-
-```sql
-ATTACH 'path/to/eve.db' AS sde;
-
-INSERT OR IGNORE INTO sde_types (type_id, type_name)
-    SELECT typeID, typeName FROM sde.invTypes WHERE published = 1;
-
-INSERT OR IGNORE INTO sde_stations (station_id, name)
-    SELECT stationID, stationName FROM sde.staStations;
-
-DETACH sde;
+structure_cache — Resolved citadel/upwell names (authenticated ESI)
+sde_types       — Item type names (auto-populated from ESI /universe/names/ on first sync)
+sde_stations    — NPC station names (auto-populated from ESI /universe/names/ on first sync)
 ```
 
 ---
@@ -165,50 +144,64 @@ DETACH sde;
 
 ```
 HangarSweep/
+├── HangarSweep.exe               # ← Ready-to-run binary (Windows x64)
+│
 ├── src/                          # React / TypeScript frontend
-│   ├── App.tsx                   # Root component — state, layout, SSO event listeners
-│   ├── types.ts                  # Shared interfaces + ISK formatter
-│   ├── main.tsx                  # ReactDOM entry point
+│   ├── App.tsx                   # Root — state, layout, threshold slider, SSO events
+│   ├── types.ts                  # Shared interfaces + ISK formatter (T/B/M/K)
+│   ├── main.tsx                  # ReactDOM entry
 │   ├── components/
 │   │   ├── CharacterHeader.tsx   # Portrait chip, character switcher dropdown
-│   │   ├── LocationList.tsx      # Dead-capital location table
-│   │   └── AssetDetail.tsx       # Per-location asset breakdown + Copy Multibuy
-│   └── styles/app.css            # Full dark EVE theme
+│   │   ├── LocationList.tsx      # Location table with scrollable body
+│   │   └── AssetDetail.tsx       # Per-location asset table + Copy Multibuy
+│   └── styles/app.css            # Full dark EVE theme (CSS custom properties)
 │
 └── src-tauri/                    # Rust backend
     ├── src/
     │   ├── main.rs               # Binary entry point
-    │   ├── lib.rs                # App bootstrap, Tauri state management
-    │   ├── auth.rs               # PKCE generation, callback listener, token exchange
-    │   ├── esi.rs                # ESI HTTP calls (market, assets, universe/names)
-    │   ├── db.rs                 # All SQLite queries and structs
+    │   ├── lib.rs                # Tauri setup, AppState, plugin registration
+    │   ├── auth.rs               # PKCE generation, TCP callback listener, token exchange
+    │   ├── esi.rs                # ESI HTTP: market prices, assets, universe/names
+    │   ├── db.rs                 # All SQLite queries and row structs
     │   └── commands.rs           # #[tauri::command] IPC handlers
     ├── migrations/
-    │   └── 0001_init.sql         # Embedded schema (auto-applied on launch)
+    │   └── 0001_init.sql         # Schema — auto-applied on launch via sqlx::migrate!
     ├── capabilities/
     │   └── default.json          # Tauri 2.0 permission grants
+    ├── .cargo/config.toml        # Pins VS 2022 link.exe (works from any shell)
     ├── Cargo.toml
-    ├── build.rs
     └── tauri.conf.json
 ```
 
 ---
 
-## Tauri IPC Commands
+## Sync Pipeline
 
-These are the Rust commands callable from the frontend via `invoke()`:
+Each **⟳ Sync** runs these steps in order:
+
+| Step | What happens |
+|---|---|
+| 1. Market prices | `GET /markets/prices/` — fetched once per 24h, skipped if fresh |
+| 2. Token refresh | Access token silently refreshed if expiry < 60s |
+| 3. Asset fetch | `GET /characters/{id}/assets/` — all pages fetched concurrently |
+| 4. Structure names | `POST /universe/names/` with citadel IDs — requires auth |
+| 5. Type & station names | `POST /universe/names/` with type IDs + NPC station IDs — no auth, cached permanently |
+
+---
+
+## IPC Commands
 
 | Command | Args | Returns | Description |
 |---|---|---|---|
-| `login` | — | `void` | Opens EVE SSO in browser, starts callback listener |
+| `login` | — | `void` | Opens EVE SSO in browser, starts TCP callback listener |
 | `get_characters` | — | `Character[]` | Lists all stored characters |
-| `delete_character` | `character_id` | `void` | Removes character + their assets |
-| `sync_all` | `character_id` | `void` | Market prices → assets → structure names |
-| `get_liquidity_summary` | `character_id` | `LiquidityRow[]` | Locations with >500M ISK |
-| `get_assets_at_location` | `location_id`, `character_id` | `AssetRow[]` | Items at a location |
-| `export_multibuy` | `location_id`, `character_id` | `string` | `TypeName Qty` newline-separated |
+| `delete_character` | `characterId` | `void` | Removes character + their assets |
+| `sync_all` | `characterId` | `void` | Runs full 5-step sync pipeline |
+| `get_liquidity_summary` | `characterId` | `LiquidityRow[]` | All locations sorted by ISK value desc |
+| `get_assets_at_location` | `locationId`, `characterId` | `AssetRow[]` | Items at a location, sorted by value |
+| `export_multibuy` | `locationId`, `characterId` | `string` | `TypeName Qty` newline-separated |
 
-### Frontend Events (Rust → React)
+### Frontend Events (Rust → React via `app.emit`)
 
 | Event | Payload | Fired when |
 |---|---|---|
@@ -218,53 +211,23 @@ These are the Rust commands callable from the frontend via `invoke()`:
 
 ---
 
-## Building for Distribution
+## Roadmap
 
-```bash
-npm run tauri build
-```
-
-Outputs:
-- **Windows:** `src-tauri/target/release/bundle/msi/` and `/nsis/`
-- **macOS:** `src-tauri/target/release/bundle/dmg/`
-- **Linux:** `src-tauri/target/release/bundle/appimage/` and `/deb/`
-
----
-
-## Liquidity Query
-
-The query that drives the location list, applied on the local DB:
-
-```sql
-SELECT
-    a.location_id,
-    COALESCE(sc.name, s.name, CAST(a.location_id AS TEXT)) AS location_name,
-    SUM(a.quantity * COALESCE(m.average_price, 0)) AS total_isk_value,
-    COUNT(DISTINCT a.item_id) AS stack_count
-FROM assets a
-LEFT JOIN market_prices  m  ON a.type_id     = m.type_id
-LEFT JOIN sde_stations   s  ON a.location_id = s.station_id
-LEFT JOIN structure_cache sc ON a.location_id = sc.id
-WHERE a.character_id = :char_id
-  AND a.location_flag NOT IN (
-      'Fitted','RigSlot0','RigSlot1','RigSlot2','RigSlot3',
-      'RigSlot4','RigSlot5','RigSlot6','RigSlot7','Implant','Skill'
-  )
-  AND a.is_singleton = 0
-GROUP BY a.location_id
-HAVING total_isk_value > 500000000
-ORDER BY total_isk_value DESC;
-```
+- [ ] Multiple character support in single sync run
+- [ ] Per-location profit/loss history
+- [ ] Jita price comparison (buy vs sell)
+- [ ] Structure access error handling (triage inaccessible citadels)
+- [ ] macOS / Linux builds
 
 ---
 
 ## Contributing
 
-Pull requests are welcome! If you find a bug or have a feature idea, open an issue first so we can discuss the approach.
+Pull requests are welcome. Open an issue first for anything non-trivial.
 
-1. Fork → branch (`feature/my-feature`) → commit → PR.
-2. Keep Rust code `cargo clippy`-clean.
-3. Format frontend with `prettier` (config TBD).
+1. Fork → branch (`feature/my-feature`) → commit → PR
+2. Rust: keep `cargo clippy` clean
+3. Frontend: TypeScript strict mode, no `any`
 
 ---
 
