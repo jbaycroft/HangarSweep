@@ -45,7 +45,8 @@ export interface SyncProgressPayload {
 
 export function formatIsk(value: number): string {
   if (value >= 1_000_000_000_000) return `${(value / 1_000_000_000_000).toFixed(2)}T ISK`;
-  if (value >= 1_000_000_000) return `${(value / 1_000_000_000).toFixed(2)}B ISK`;
-  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(2)}M ISK`;
-  return `${value.toLocaleString()} ISK`;
+  if (value >= 1_000_000_000)     return `${(value / 1_000_000_000).toFixed(2)}B ISK`;
+  if (value >= 1_000_000)         return `${(value / 1_000_000).toFixed(2)}M ISK`;
+  if (value >= 1_000)             return `${(value / 1_000).toFixed(1)}K ISK`;
+  return `${Math.round(value).toLocaleString()} ISK`;
 }

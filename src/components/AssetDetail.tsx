@@ -24,6 +24,8 @@ export default function AssetDetail({ location, characterId }: Props) {
           locationId: location.location_id,
           characterId: characterId,
         });
+        // Sort descending by estimated value
+        data.sort((a, b) => b.estimated_value - a.estimated_value);
         setAssets(data);
       } catch (e) {
         setError(String(e));
@@ -52,11 +54,14 @@ export default function AssetDetail({ location, characterId }: Props) {
 
   return (
     <div className="asset-detail">
+      {/* ── Header ─────────────────────────────────────────────────────── */}
       <div className="detail-header">
         <div className="detail-title">
           <h3 title={location.location_name}>{location.location_name}</h3>
           <span className="detail-subtitle">
-            {formatIsk(totalValue)} across {assets.length} type{assets.length !== 1 ? 's' : ''}
+            <span className="detail-isk">{formatIsk(totalValue)}</span>
+            &nbsp;across&nbsp;
+            <strong>{assets.length}</strong> type{assets.length !== 1 ? 's' : ''}
           </span>
         </div>
         <button
@@ -70,29 +75,37 @@ export default function AssetDetail({ location, characterId }: Props) {
 
       {error && <div className="error-inline">⚠ {error}</div>}
 
+      {/* ── Asset table ─────────────────────────────────────────────────── */}
       {loading ? (
         <div className="loading">Loading assets…</div>
       ) : assets.length === 0 ? (
         <div className="list-empty"><p>No tradeable assets at this location.</p></div>
       ) : (
-        <table className="data-table">
-          <thead>
-            <tr>
-              <th>Type</th>
-              <th className="num">Qty</th>
-              <th className="num">Est. Value</th>
-            </tr>
-          </thead>
-          <tbody>
-            {assets.map((asset) => (
-              <tr key={asset.item_id} className="data-row">
-                <td>{asset.type_name}</td>
-                <td className="num">{asset.quantity.toLocaleString()}</td>
-                <td className="num isk-value">{formatIsk(asset.estimated_value)}</td>
+        <div className="asset-table-wrap">
+          <table className="data-table asset-table">
+            <colgroup>
+              <col style={{ width: '55%' }} />
+              <col style={{ width: '15%' }} />
+              <col style={{ width: '30%' }} />
+            </colgroup>
+            <thead>
+              <tr>
+                <th>Type</th>
+                <th className="num">Qty</th>
+                <th className="num">Est. Value</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {assets.map((asset) => (
+                <tr key={asset.item_id} className="data-row asset-row">
+                  <td className="type-cell" title={asset.type_name}>{asset.type_name}</td>
+                  <td className="num qty-cell">{asset.quantity.toLocaleString()}</td>
+                  <td className="num isk-value">{formatIsk(asset.estimated_value)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </div>
   );
