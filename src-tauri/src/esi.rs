@@ -230,12 +230,19 @@ pub async fn resolve_names(
     .filter(|id| *id > 0)
     .collect();
 
-    // ── Collect unresolved NPC station location_ids (<1T) ─────────────────────
+    // ── Collect unresolved NPC universe location_ids only ─────────────────────
+    // IMPORTANT: asset location_ids can be ship/container item_ids (100M-1T range)
+    // which ESI /universe/names/ cannot resolve — one bad ID makes the WHOLE batch
+    // return 404. Only include known NPC universe ID ranges (all < 100_000_000):
+    //   Regions:        10_000_000 – 13_000_000
+    //   Constellations: 20_000_000 – 23_000_000
+    //   Solar systems:  30_000_000 – 33_000_000
+    //   NPC stations:   60_000_000 – 64_000_000
     let unknown_stations: Vec<i64> = sqlx::query(
         "SELECT DISTINCT a.location_id FROM assets a
          LEFT JOIN sde_stations s ON s.station_id = a.location_id
          WHERE a.character_id = ?
-           AND a.location_id < 1000000000000
+           AND a.location_id < 100000000
            AND s.station_id IS NULL",
     )
     .bind(character_id)
@@ -246,12 +253,8 @@ pub async fn resolve_names(
     .filter(|id| *id > 0)
     .collect();
 
-    // Combine into one deduplicated list, resolve in batches of 1000
-    let mut all_ids: Vec<i64> = unknown_types.iter().chain(unknown_stations.iter()).copied().collect();
-    all_ids.sort_unstable();
-    all_ids.dedup();
-
-    if all_ids.is_empty() {
+    let total = unknown_types.len() + unknown_stations.len();
+    if total == 0 {
         return Ok(());
     }
 
@@ -260,72 +263,68 @@ pub async fn resolve_names(
         serde_json::json!({
             "step": "names",
             "status": "running",
-            "message": format!("Resolving {} type/station names…", all_ids.len())
+            "message": format!("Resolving {} names…", total)
         }),
     );
 
     let client = Client::new();
 
-    for chunk in all_ids.chunks(1000) {
-        let body = serde_json::to_string(chunk)?;
-        let resp = client
-            .post("https://esi.evetech.net/latest/universe/names/?datasource=tranquility")
-            .header("Content-Type", "application/json")
-            .header("Accept", "application/json")
-            .body(body)
-            .send()
-            .await;
+    // ── Resolve types and stations in SEPARATE batches ────────────────────────
+    // Separating them means a 404 on one category can't kill the other.
+    for id_list in [unknown_types.as_slice(), unknown_stations.as_slice()] {
+        if id_list.is_empty() { continue; }
 
-        let resp = match resp {
-            Ok(r) => r,
-            Err(e) => { eprintln!("[esi] universe/names request error: {}", e); continue; }
-        };
+        for chunk in id_list.chunks(1000) {
+            let body = serde_json::to_string(chunk)?;
+            let resp = client
+                .post("https://esi.evetech.net/latest/universe/names/?datasource=tranquility")
+                .header("Content-Type", "application/json")
+                .header("Accept", "application/json")
+                .body(body)
+                .send()
+                .await;
 
-        if !resp.status().is_success() {
-            eprintln!("[esi] universe/names returned {}", resp.status());
-            continue;
-        }
+            let resp = match resp {
+                Ok(r) => r,
+                Err(e) => { eprintln!("[esi] universe/names request error: {}", e); continue; }
+            };
 
-        let entries: Vec<UniverseNameEntry> = match resp.json().await {
-            Ok(v) => v,
-            Err(e) => { eprintln!("[esi] universe/names parse error: {}", e); continue; }
-        };
-
-        let mut tx = pool.begin().await?;
-        for entry in &entries {
-            match entry.category.as_str() {
-                "inventory_type" => {
-                    sqlx::query(
-                        "INSERT OR IGNORE INTO sde_types (type_id, type_name) VALUES (?, ?)",
-                    )
-                    .bind(entry.id)
-                    .bind(&entry.name)
-                    .execute(&mut *tx)
-                    .await?;
-                }
-                "station" => {
-                    sqlx::query(
-                        "INSERT OR IGNORE INTO sde_stations (station_id, name) VALUES (?, ?)",
-                    )
-                    .bind(entry.id)
-                    .bind(&entry.name)
-                    .execute(&mut *tx)
-                    .await?;
-                }
-                // solar_system ids can appear as container location_ids; store as station fallback
-                "solar_system" | "constellation" | "region" => {
-                    sqlx::query(
-                        "INSERT OR IGNORE INTO sde_stations (station_id, name) VALUES (?, ?)",
-                    )
-                    .bind(entry.id)
-                    .bind(&entry.name)
-                    .execute(&mut *tx)
-                    .await?;
-                }
-                _ => {}
+            if !resp.status().is_success() {
+                eprintln!("[esi] universe/names {} returned {}", resp.status(), resp.text().await.unwrap_or_default());
+                continue;
             }
+
+            let entries: Vec<UniverseNameEntry> = match resp.json().await {
+                Ok(v) => v,
+                Err(e) => { eprintln!("[esi] universe/names parse error: {}", e); continue; }
+            };
+
+            let mut tx = pool.begin().await?;
+            for entry in &entries {
+                match entry.category.as_str() {
+                    "inventory_type" => {
+                        sqlx::query(
+                            "INSERT OR IGNORE INTO sde_types (type_id, type_name) VALUES (?, ?)",
+                        )
+                        .bind(entry.id)
+                        .bind(&entry.name)
+                        .execute(&mut *tx)
+                        .await?;
+                    }
+                    "station" | "solar_system" | "constellation" | "region" => {
+                        sqlx::query(
+                            "INSERT OR IGNORE INTO sde_stations (station_id, name) VALUES (?, ?)",
+                        )
+                        .bind(entry.id)
+                        .bind(&entry.name)
+                        .execute(&mut *tx)
+                        .await?;
+                    }
+                    _ => {}
+                }
+            }
+            tx.commit().await?;
         }
-        tx.commit().await?;
     }
 
     let _ = app.emit(
