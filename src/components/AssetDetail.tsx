@@ -21,8 +21,8 @@ export default function AssetDetail({ location, characterId }: Props) {
       setCopied(false);
       try {
         const data = await invoke<AssetRow[]>('get_assets_at_location', {
-          location_id: location.location_id,
-          character_id: characterId,
+          locationId: location.location_id,
+          characterId: characterId,
         });
         setAssets(data);
       } catch (e) {
@@ -37,8 +37,8 @@ export default function AssetDetail({ location, characterId }: Props) {
   const handleCopyMultibuy = async () => {
     try {
       const text = await invoke<string>('export_multibuy', {
-        location_id: location.location_id,
-        character_id: characterId,
+        locationId: location.location_id,
+        characterId: characterId,
       });
       await writeText(text);
       setCopied(true);

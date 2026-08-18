@@ -30,7 +30,7 @@ export default function App() {
 
   const loadSummary = useCallback(async (charId: number) => {
     try {
-      const data = await invoke<LiquidityRow[]>('get_liquidity_summary', { character_id: charId });
+      const data = await invoke<LiquidityRow[]>('get_liquidity_summary', { characterId: charId });
       setRows(data);
       setSelectedLocation(null);
     } catch (e) {
@@ -93,7 +93,7 @@ export default function App() {
     setSyncMessage('Starting sync...');
     setError(null);
     try {
-      await invoke('sync_all', { character_id: activeChar.id });
+      await invoke('sync_all', { characterId: activeChar.id });
       await loadSummary(activeChar.id);
       setSyncMessage('Sync complete');
     } catch (e) {
@@ -106,7 +106,7 @@ export default function App() {
 
   const handleDeleteChar = async (charId: number) => {
     try {
-      await invoke('delete_character', { character_id: charId });
+      await invoke('delete_character', { characterId: charId });
       const updated = characters.filter((c) => c.id !== charId);
       setCharacters(updated);
       if (activeChar?.id === charId) {
