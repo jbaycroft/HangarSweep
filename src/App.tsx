@@ -52,7 +52,7 @@ export default function App() {
 
   // SSO event listeners
   useEffect(() => {
-    const unlistenComplete = listen<AuthCompletePayload>('auth-complete', (event) => {
+    const unlistenComplete = listen<AuthCompletePayload>('auth-complete', (_event) => {
       setAuthPending(false);
       setError(null);
       loadCharacters();

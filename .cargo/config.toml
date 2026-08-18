@@ -1,2 +1,4 @@
-# No linker overrides needed — using stable-x86_64-pc-windows-msvc toolchain
-# which picks up link.exe from VS Build Tools 2022 automatically.
+[target.x86_64-pc-windows-msvc]
+# Explicitly point cargo at the MSVC linker so it works from any shell.
+# VS Build Tools 2022 is installed at the path below.
+linker = "C:\\Program Files (x86)\\Microsoft Visual Studio\\2022\\BuildTools\\VC\\Tools\\MSVC\\14.44.35207\\bin\\Hostx64\\x64\\link.exe"
