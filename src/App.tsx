@@ -1,10 +1,13 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useMemo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { Character, AuthCompletePayload, AuthErrorPayload, LiquidityRow } from './types';
+import { Character, AuthCompletePayload, AuthErrorPayload, LiquidityRow, formatIsk } from './types';
 import CharacterHeader from './components/CharacterHeader';
 import LocationList from './components/LocationList';
 import AssetDetail from './components/AssetDetail';
+
+// Slider steps in ISK — 0, 10M, 50M, 100M, 250M, 500M, 1B, 2B, 5B, 10B
+const THRESHOLD_STEPS = [0, 10e6, 50e6, 100e6, 250e6, 500e6, 1e9, 2e9, 5e9, 10e9];
 
 export default function App() {
   const [characters, setCharacters] = useState<Character[]>([]);
@@ -15,6 +18,20 @@ export default function App() {
   const [syncMessage, setSyncMessage] = useState<string>('');
   const [error, setError] = useState<string | null>(null);
   const [authPending, setAuthPending] = useState(false);
+  // Slider index into THRESHOLD_STEPS (default 0 = show all)
+  const [thresholdIdx, setThresholdIdx] = useState(0);
+
+  const threshold = THRESHOLD_STEPS[thresholdIdx];
+
+  // All rows filtered by current threshold
+  const filteredRows = useMemo(
+    () => rows.filter((r) => r.total_isk_value >= threshold),
+    [rows, threshold]
+  );
+
+  // Grand totals across ALL locations (ignores filter so user can see real numbers)
+  const grandTotal = useMemo(() => rows.reduce((s, r) => s + r.total_isk_value, 0), [rows]);
+  const grandStacks = useMemo(() => rows.reduce((s, r) => s + r.stack_count, 0), [rows]);
 
   const loadCharacters = useCallback(async () => {
     try {
@@ -95,7 +112,7 @@ export default function App() {
     try {
       await invoke('sync_all', { characterId: activeChar.id });
       await loadSummary(activeChar.id);
-      setSyncMessage('Sync complete');
+      setSyncMessage('Sync complete ✓');
     } catch (e) {
       setError(String(e));
       setSyncMessage('');
@@ -150,8 +167,9 @@ export default function App() {
         ) : (
           <div className="content-grid">
             <div className="panel left-panel">
+              {/* ── Toolbar ─────────────────────────────────────────── */}
               <div className="panel-header">
-                <h3>Dead Capital Locations</h3>
+                <h3>Asset Locations</h3>
                 <div className="panel-actions">
                   {syncMessage && <span className="sync-msg">{syncMessage}</span>}
                   <button
@@ -159,12 +177,57 @@ export default function App() {
                     onClick={handleSync}
                     disabled={syncing}
                   >
-                    {syncing ? '⟳ Syncing…' : '⟳ Sync Now'}
+                    {syncing ? '⟳ Syncing…' : '⟳ Sync'}
                   </button>
                 </div>
               </div>
+
+              {/* ── Grand total summary ──────────────────────────────── */}
+              {rows.length > 0 && (
+                <div className="asset-summary">
+                  <div className="summary-stat">
+                    <span className="summary-label">All Locations</span>
+                    <span className="summary-value">{rows.length}</span>
+                  </div>
+                  <div className="summary-stat">
+                    <span className="summary-label">Total Stacks</span>
+                    <span className="summary-value">{grandStacks.toLocaleString()}</span>
+                  </div>
+                  <div className="summary-stat">
+                    <span className="summary-label">Est. Total Value</span>
+                    <span className="summary-value isk">{formatIsk(grandTotal)}</span>
+                  </div>
+                </div>
+              )}
+
+              {/* ── Threshold slider ─────────────────────────────────── */}
+              <div className="threshold-bar">
+                <label className="threshold-label">
+                  Min value:&nbsp;
+                  <span className="threshold-value">
+                    {threshold === 0 ? 'Show all' : formatIsk(threshold)}
+                  </span>
+                </label>
+                <input
+                  type="range"
+                  className="threshold-slider"
+                  min={0}
+                  max={THRESHOLD_STEPS.length - 1}
+                  step={1}
+                  value={thresholdIdx}
+                  onChange={(e) => {
+                    setThresholdIdx(Number(e.target.value));
+                    setSelectedLocation(null);
+                  }}
+                />
+                <span className="threshold-count">
+                  {filteredRows.length} / {rows.length} locations
+                </span>
+              </div>
+
               <LocationList
-                rows={rows}
+                rows={filteredRows}
+                allRows={rows}
                 selectedLocationId={selectedLocation?.location_id ?? null}
                 onSelect={setSelectedLocation}
               />

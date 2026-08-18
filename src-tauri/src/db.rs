@@ -145,7 +145,6 @@ pub async fn get_liquidity_summary(
           )
           AND a.is_singleton = 0
         GROUP BY a.location_id
-        HAVING total_isk_value > 500000000
         ORDER BY total_isk_value DESC
         ",
     )
