@@ -1,5 +1,5 @@
-use tauri::Manager;
-use tauri_plugin_shell::ShellExt;
+use tauri::Emitter;
+use tauri_plugin_opener::OpenerExt;
 
 use crate::{
     auth,
@@ -27,8 +27,8 @@ pub async fn login(
     }
 
     // Open system browser to EVE SSO
-    app.shell()
-        .open(&auth_url, None)
+    app.opener()
+        .open_url(&auth_url, None::<&str>)
         .map_err(|e| format!("Failed to open browser: {}", e))?;
 
     // Spawn background listener

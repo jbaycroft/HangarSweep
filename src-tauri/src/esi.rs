@@ -1,8 +1,9 @@
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use reqwest::Client;
 use serde::Deserialize;
-use sqlx::SqlitePool;
+use sqlx::{Row, SqlitePool};
 use std::time::{SystemTime, UNIX_EPOCH};
+use tauri::Emitter;
 use tokio::task::JoinSet;
 
 use crate::db;
@@ -40,13 +41,14 @@ pub async fn sync_market_prices(pool: &SqlitePool) -> Result<()> {
 
     for p in &prices {
         let avg = p.average_price.unwrap_or(0.0);
-        sqlx::query!(
+        sqlx::query(
             "INSERT INTO market_prices (type_id, average_price, last_updated) VALUES (?, ?, ?) \
-             ON CONFLICT(type_id) DO UPDATE SET average_price=excluded.average_price, last_updated=excluded.last_updated",
-            p.type_id,
-            avg,
-            now
+             ON CONFLICT(type_id) DO UPDATE SET \
+             average_price=excluded.average_price, last_updated=excluded.last_updated",
         )
+        .bind(p.type_id)
+        .bind(avg)
+        .bind(now)
         .execute(&mut *tx)
         .await?;
     }
@@ -56,7 +58,7 @@ pub async fn sync_market_prices(pool: &SqlitePool) -> Result<()> {
 }
 
 pub async fn market_prices_stale(pool: &SqlitePool) -> bool {
-    let row = sqlx::query!("SELECT MAX(last_updated) as lu FROM market_prices")
+    let row = sqlx::query("SELECT MAX(last_updated) as lu FROM market_prices")
         .fetch_optional(pool)
         .await
         .ok()
@@ -64,8 +66,8 @@ pub async fn market_prices_stale(pool: &SqlitePool) -> bool {
 
     match row {
         Some(r) => {
-            let lu = r.lu.unwrap_or(0);
-            now_unix() - lu > 86_400 // older than 24 hours
+            let lu: i64 = r.try_get("lu").unwrap_or(0);
+            now_unix() - lu > 86_400
         }
         None => true,
     }
@@ -130,7 +132,6 @@ pub async fn sync_assets(
                     .send()
                     .await?;
 
-                // Respect ESI error limit
                 if let Some(remain) = resp
                     .headers()
                     .get("x-esi-error-limit-remain")
@@ -156,28 +157,36 @@ pub async fn sync_assets(
         }
     }
 
-    let _ = app.emit("sync-progress", serde_json::json!({ "step": "assets", "status": "running", "message": format!("Storing {} items...", all_assets.len()) }));
+    let _ = app.emit(
+        "sync-progress",
+        serde_json::json!({
+            "step": "assets",
+            "status": "running",
+            "message": format!("Storing {} items...", all_assets.len())
+        }),
+    );
 
     // ── Transactional replace ──────────────────────────────────────────────────
     let mut tx = pool.begin().await?;
-    sqlx::query!("DELETE FROM assets WHERE character_id = ?", character_id)
+    sqlx::query("DELETE FROM assets WHERE character_id = ?")
+        .bind(character_id)
         .execute(&mut *tx)
         .await?;
 
     for a in &all_assets {
-        let singleton = if a.is_singleton { 1i64 } else { 0i64 };
-        sqlx::query!(
+        let singleton: i64 = if a.is_singleton { 1 } else { 0 };
+        sqlx::query(
             "INSERT OR IGNORE INTO assets \
              (item_id, character_id, type_id, location_id, location_flag, quantity, is_singleton) \
              VALUES (?, ?, ?, ?, ?, ?, ?)",
-            a.item_id,
-            character_id,
-            a.type_id,
-            a.location_id,
-            a.location_flag,
-            a.quantity,
-            singleton
         )
+        .bind(a.item_id)
+        .bind(character_id)
+        .bind(a.type_id)
+        .bind(a.location_id)
+        .bind(&a.location_flag)
+        .bind(a.quantity)
+        .bind(singleton)
         .execute(&mut *tx)
         .await?;
     }
@@ -206,7 +215,6 @@ pub async fn resolve_structures(
 
     let client = Client::new();
 
-    // Chunk into batches of 1000 (ESI limit)
     for chunk in ids.chunks(1000) {
         let body = serde_json::to_string(chunk)?;
         let resp = client
@@ -219,7 +227,6 @@ pub async fn resolve_structures(
             .await?;
 
         if !resp.status().is_success() {
-            // Some structures might be inaccessible; skip this chunk
             eprintln!("[esi] universe/names returned {}", resp.status());
             continue;
         }
