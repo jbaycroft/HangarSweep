@@ -99,12 +99,19 @@ pub async fn sync_all(
         .map_err(|e| format!("Asset sync failed: {}", e))?;
     emit("assets", "complete", None);
 
-    // 4. Resolve structure names
+    // 4. Resolve structure names (player citadels)
     emit("structures", "running", Some("Resolving structure names..."));
     esi::resolve_structures(character_id, &access_token, &state.db)
         .await
         .map_err(|e| format!("Structure resolution failed: {}", e))?;
     emit("structures", "complete", None);
+
+    // 5. Resolve NPC station names + item type names via ESI /universe/names/
+    emit("names", "running", Some("Resolving item and station names..."));
+    esi::resolve_names(character_id, &state.db, &app)
+        .await
+        .map_err(|e| format!("Name resolution failed: {}", e))?;
+    emit("names", "complete", None);
 
     Ok(())
 }

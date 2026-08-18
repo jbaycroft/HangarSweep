@@ -195,7 +195,148 @@ pub async fn sync_assets(
     Ok(())
 }
 
-// ─── Structure name resolution ────────────────────────────────────────────────
+// ─── Bulk name resolution (NPC stations + item types) ────────────────────────
+//
+// After asset sync we know every type_id and location_id in the DB.
+// For NPC stations (id < 1_000_000_000_000) and type names we hit
+// POST /universe/names/ which accepts up to 1 000 ids per call and
+// returns [{id, name, category}, …] — no auth required.
+// Results land in sde_stations / sde_types so location_name and
+// type_name columns in all queries resolve properly.
+
+#[derive(Deserialize, Debug)]
+struct UniverseNameEntry {
+    id: i64,
+    name: String,
+    category: String,
+}
+
+pub async fn resolve_names(
+    character_id: i64,
+    pool: &SqlitePool,
+    app: &tauri::AppHandle,
+) -> Result<()> {
+    // ── Collect unresolved type_ids ────────────────────────────────────────────
+    let unknown_types: Vec<i64> = sqlx::query(
+        "SELECT DISTINCT a.type_id FROM assets a
+         LEFT JOIN sde_types t ON t.type_id = a.type_id
+         WHERE a.character_id = ? AND t.type_id IS NULL",
+    )
+    .bind(character_id)
+    .fetch_all(pool)
+    .await?
+    .into_iter()
+    .map(|r| r.try_get::<i64, _>(0).unwrap_or(0))
+    .filter(|id| *id > 0)
+    .collect();
+
+    // ── Collect unresolved NPC station location_ids (<1T) ─────────────────────
+    let unknown_stations: Vec<i64> = sqlx::query(
+        "SELECT DISTINCT a.location_id FROM assets a
+         LEFT JOIN sde_stations s ON s.station_id = a.location_id
+         WHERE a.character_id = ?
+           AND a.location_id < 1000000000000
+           AND s.station_id IS NULL",
+    )
+    .bind(character_id)
+    .fetch_all(pool)
+    .await?
+    .into_iter()
+    .map(|r| r.try_get::<i64, _>(0).unwrap_or(0))
+    .filter(|id| *id > 0)
+    .collect();
+
+    // Combine into one deduplicated list, resolve in batches of 1000
+    let mut all_ids: Vec<i64> = unknown_types.iter().chain(unknown_stations.iter()).copied().collect();
+    all_ids.sort_unstable();
+    all_ids.dedup();
+
+    if all_ids.is_empty() {
+        return Ok(());
+    }
+
+    let _ = app.emit(
+        "sync-progress",
+        serde_json::json!({
+            "step": "names",
+            "status": "running",
+            "message": format!("Resolving {} type/station names…", all_ids.len())
+        }),
+    );
+
+    let client = Client::new();
+
+    for chunk in all_ids.chunks(1000) {
+        let body = serde_json::to_string(chunk)?;
+        let resp = client
+            .post("https://esi.evetech.net/latest/universe/names/?datasource=tranquility")
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json")
+            .body(body)
+            .send()
+            .await;
+
+        let resp = match resp {
+            Ok(r) => r,
+            Err(e) => { eprintln!("[esi] universe/names request error: {}", e); continue; }
+        };
+
+        if !resp.status().is_success() {
+            eprintln!("[esi] universe/names returned {}", resp.status());
+            continue;
+        }
+
+        let entries: Vec<UniverseNameEntry> = match resp.json().await {
+            Ok(v) => v,
+            Err(e) => { eprintln!("[esi] universe/names parse error: {}", e); continue; }
+        };
+
+        let mut tx = pool.begin().await?;
+        for entry in &entries {
+            match entry.category.as_str() {
+                "inventory_type" => {
+                    sqlx::query(
+                        "INSERT OR IGNORE INTO sde_types (type_id, type_name) VALUES (?, ?)",
+                    )
+                    .bind(entry.id)
+                    .bind(&entry.name)
+                    .execute(&mut *tx)
+                    .await?;
+                }
+                "station" => {
+                    sqlx::query(
+                        "INSERT OR IGNORE INTO sde_stations (station_id, name) VALUES (?, ?)",
+                    )
+                    .bind(entry.id)
+                    .bind(&entry.name)
+                    .execute(&mut *tx)
+                    .await?;
+                }
+                // solar_system ids can appear as container location_ids; store as station fallback
+                "solar_system" | "constellation" | "region" => {
+                    sqlx::query(
+                        "INSERT OR IGNORE INTO sde_stations (station_id, name) VALUES (?, ?)",
+                    )
+                    .bind(entry.id)
+                    .bind(&entry.name)
+                    .execute(&mut *tx)
+                    .await?;
+                }
+                _ => {}
+            }
+        }
+        tx.commit().await?;
+    }
+
+    let _ = app.emit(
+        "sync-progress",
+        serde_json::json!({ "step": "names", "status": "complete" }),
+    );
+
+    Ok(())
+}
+
+// ─── Structure name resolution (player citadels, requires auth) ───────────────
 
 #[derive(Deserialize)]
 struct UniverseName {
