@@ -58,7 +58,7 @@ jobs:
             "HangarSweep-${{ steps.version.outputs.version }}-windows-x64.exe"
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           name: "HangarSweep v${{ steps.version.outputs.version }}"
           body_path: CHANGELOG.md
