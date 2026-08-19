@@ -11,10 +11,12 @@
 
 <p align="center">
   <img alt="Version" src="https://img.shields.io/badge/version-0.1.0-gold" />
+  <img alt="CI" src="https://github.com/jbaycroft/HangarSweep/actions/workflows/ci.yml/badge.svg" />
   <img alt="Tauri 2.0" src="https://img.shields.io/badge/Tauri-2.0-blue?logo=tauri" />
   <img alt="Rust" src="https://img.shields.io/badge/Rust-1.78+-orange?logo=rust" />
   <img alt="React 18" src="https://img.shields.io/badge/React-18-61dafb?logo=react" />
   <img alt="SQLite" src="https://img.shields.io/badge/SQLite-local-green?logo=sqlite" />
+  <img alt="Tests" src="https://img.shields.io/badge/tests-59%20passing-brightgreen" />
   <img alt="License MIT" src="https://img.shields.io/badge/License-MIT-lightgrey" />
 </p>
 
