@@ -248,3 +248,384 @@ pub async fn uncached_structure_ids(pool: &SqlitePool, character_id: i64) -> Res
     .await?;
     Ok(rows.into_iter().map(|r| r.get::<i64, _>("location_id")).collect())
 }
+
+// ─── Tests ────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    /// Create an isolated in-memory SQLite pool with migrations applied.
+    /// Each test gets its own pool so they never interfere.
+    async fn setup() -> SqlitePool {
+        let pool = SqlitePoolOptions::new()
+            .connect("sqlite::memory:")
+            .await
+            .expect("in-memory SQLite failed");
+        sqlx::migrate!("./migrations")
+            .run(&pool)
+            .await
+            .expect("migrations failed");
+        pool
+    }
+
+    fn test_char(id: i64) -> Character {
+        Character {
+            id,
+            name: format!("Pilot {id}"),
+            access_token: "access".into(),
+            refresh_token: "refresh".into(),
+            token_expiry: 9_999_999_999,
+        }
+    }
+
+    // ── Character CRUD ────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_upsert_and_get_character() {
+        let pool = setup().await;
+        let c = test_char(1234);
+        upsert_character(&pool, &c).await.unwrap();
+
+        let fetched = get_character(&pool, 1234).await.unwrap();
+        assert_eq!(fetched.id, 1234);
+        assert_eq!(fetched.name, "Pilot 1234");
+    }
+
+    #[tokio::test]
+    async fn test_upsert_updates_existing_character() {
+        let pool = setup().await;
+        upsert_character(&pool, &test_char(99)).await.unwrap();
+
+        let updated = Character {
+            id: 99,
+            name: "Updated Name".into(),
+            access_token: "new_access".into(),
+            refresh_token: "new_refresh".into(),
+            token_expiry: 1_000,
+        };
+        upsert_character(&pool, &updated).await.unwrap();
+
+        let fetched = get_character(&pool, 99).await.unwrap();
+        assert_eq!(fetched.name, "Updated Name");
+        assert_eq!(fetched.access_token, "new_access");
+    }
+
+    #[tokio::test]
+    async fn test_get_characters_returns_all_sorted() {
+        let pool = setup().await;
+        let mut c1 = test_char(1); c1.name = "Zebra".into();
+        let mut c2 = test_char(2); c2.name = "Alpha".into();
+        upsert_character(&pool, &c1).await.unwrap();
+        upsert_character(&pool, &c2).await.unwrap();
+
+        let chars = get_characters(&pool).await.unwrap();
+        assert_eq!(chars.len(), 2);
+        assert_eq!(chars[0].name, "Alpha");
+        assert_eq!(chars[1].name, "Zebra");
+    }
+
+    #[tokio::test]
+    async fn test_get_character_not_found() {
+        let pool = setup().await;
+        let result = get_character(&pool, 99999).await;
+        assert!(result.is_err(), "expected error for missing character");
+    }
+
+    #[tokio::test]
+    async fn test_delete_character_removes_character_and_assets() {
+        let pool = setup().await;
+        upsert_character(&pool, &test_char(42)).await.unwrap();
+
+        // Insert an asset for this character
+        sqlx::query(
+            "INSERT INTO assets (item_id, character_id, type_id, location_id, location_flag, quantity, is_singleton)
+             VALUES (1, 42, 34, 60001099, 'Hangar', 100, 0)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        delete_character(&pool, 42).await.unwrap();
+
+        // Character should be gone
+        assert!(get_character(&pool, 42).await.is_err());
+
+        // Assets should be cascaded
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM assets WHERE character_id = 42")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 0, "assets should be deleted with character");
+    }
+
+    #[tokio::test]
+    async fn test_update_tokens() {
+        let pool = setup().await;
+        upsert_character(&pool, &test_char(7)).await.unwrap();
+        update_tokens(&pool, 7, "tok_new", "ref_new", 12345).await.unwrap();
+
+        let c = get_character(&pool, 7).await.unwrap();
+        assert_eq!(c.access_token, "tok_new");
+        assert_eq!(c.refresh_token, "ref_new");
+        assert_eq!(c.token_expiry, 12345);
+    }
+
+    // ── Liquidity summary ─────────────────────────────────────────────────────
+
+    /// Insert a market price for testing ISK estimates.
+    async fn insert_price(pool: &SqlitePool, type_id: i64, price: f64) {
+        sqlx::query(
+            "INSERT INTO market_prices (type_id, average_price, last_updated) VALUES (?, ?, 0)
+             ON CONFLICT(type_id) DO UPDATE SET average_price = excluded.average_price",
+        )
+        .bind(type_id)
+        .bind(price)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    /// Insert a test asset.
+    async fn insert_asset(
+        pool: &SqlitePool,
+        item_id: i64,
+        character_id: i64,
+        type_id: i64,
+        location_id: i64,
+        flag: &str,
+        qty: i64,
+        singleton: bool,
+    ) {
+        sqlx::query(
+            "INSERT INTO assets (item_id, character_id, type_id, location_id, location_flag, quantity, is_singleton)
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(item_id)
+        .bind(character_id)
+        .bind(type_id)
+        .bind(location_id)
+        .bind(flag)
+        .bind(qty)
+        .bind(singleton as i64)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_liquidity_summary_returns_locations_with_value() {
+        let pool = setup().await;
+        upsert_character(&pool, &test_char(1)).await.unwrap();
+        insert_price(&pool, 34, 10.0).await; // Tritanium = 10 ISK
+        insert_asset(&pool, 1, 1, 34, 60001099, "Hangar", 1000, false).await;
+
+        let rows = get_liquidity_summary(&pool, 1).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].location_id, 60001099);
+        // 1000 × 10.0 = 10,000 ISK
+        assert!((rows[0].total_isk_value - 10_000.0).abs() < 0.01);
+        assert_eq!(rows[0].stack_count, 1);
+    }
+
+    #[tokio::test]
+    async fn test_liquidity_summary_excludes_fitted_items() {
+        let pool = setup().await;
+        upsert_character(&pool, &test_char(1)).await.unwrap();
+        insert_price(&pool, 34, 10.0).await;
+        // Fitted items should be excluded
+        for (item_id, flag) in [
+            (10, "Fitted"), (11, "RigSlot0"), (12, "Implant"), (13, "Skill"),
+        ] {
+            insert_asset(&pool, item_id, 1, 34, 60001099, flag, 100, false).await;
+        }
+        // One valid Hangar item
+        insert_asset(&pool, 20, 1, 34, 60001099, "Hangar", 500, false).await;
+
+        let rows = get_liquidity_summary(&pool, 1).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert!((rows[0].total_isk_value - 5_000.0).abs() < 0.01,
+            "only Hangar item should count; got {}", rows[0].total_isk_value);
+    }
+
+    #[tokio::test]
+    async fn test_liquidity_summary_excludes_singletons() {
+        let pool = setup().await;
+        upsert_character(&pool, &test_char(1)).await.unwrap();
+        insert_price(&pool, 34, 10.0).await;
+        // Singleton (assembled ship) should be excluded
+        insert_asset(&pool, 1, 1, 34, 60001099, "Hangar", 1, true).await;
+        // Normal stack should be included
+        insert_asset(&pool, 2, 1, 35, 60001099, "Hangar", 100, false).await;
+
+        let rows = get_liquidity_summary(&pool, 1).await.unwrap();
+        // Only the non-singleton item contributes; type_id 35 has no price → 0 ISK
+        // location still appears but with 0 value (type_id 35 not in market_prices)
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].stack_count, 1);
+    }
+
+    #[tokio::test]
+    async fn test_liquidity_summary_sorted_descending() {
+        let pool = setup().await;
+        upsert_character(&pool, &test_char(1)).await.unwrap();
+        insert_price(&pool, 34, 1.0).await;
+        insert_price(&pool, 35, 100.0).await;
+        // Location A: 10 × 1 ISK = 10
+        insert_asset(&pool, 1, 1, 34, 60000001, "Hangar", 10, false).await;
+        // Location B: 10 × 100 ISK = 1000
+        insert_asset(&pool, 2, 1, 35, 60000002, "Hangar", 10, false).await;
+
+        let rows = get_liquidity_summary(&pool, 1).await.unwrap();
+        assert_eq!(rows.len(), 2);
+        assert!(rows[0].total_isk_value > rows[1].total_isk_value,
+            "rows should be descending by ISK value");
+    }
+
+    #[tokio::test]
+    async fn test_liquidity_summary_resolves_station_name() {
+        let pool = setup().await;
+        upsert_character(&pool, &test_char(1)).await.unwrap();
+        insert_price(&pool, 34, 1.0).await;
+        sqlx::query("INSERT INTO sde_stations (station_id, name) VALUES (60001099, 'Jita IV - Moon 4')")
+            .execute(&pool).await.unwrap();
+        insert_asset(&pool, 1, 1, 34, 60001099, "Hangar", 1, false).await;
+
+        let rows = get_liquidity_summary(&pool, 1).await.unwrap();
+        assert_eq!(rows[0].location_name, "Jita IV - Moon 4");
+    }
+
+    #[tokio::test]
+    async fn test_liquidity_summary_falls_back_to_id_string() {
+        let pool = setup().await;
+        upsert_character(&pool, &test_char(1)).await.unwrap();
+        insert_price(&pool, 34, 1.0).await;
+        insert_asset(&pool, 1, 1, 34, 60001099, "Hangar", 1, false).await;
+
+        let rows = get_liquidity_summary(&pool, 1).await.unwrap();
+        assert_eq!(rows[0].location_name, "60001099",
+            "unresolved station should fall back to ID string");
+    }
+
+    // ── Assets at location ────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_assets_at_location_groups_by_type() {
+        let pool = setup().await;
+        upsert_character(&pool, &test_char(1)).await.unwrap();
+        // Two stacks of the same type at the same location
+        insert_asset(&pool, 1, 1, 34, 60001099, "Hangar", 500, false).await;
+        insert_asset(&pool, 2, 1, 34, 60001099, "Hangar", 200, false).await;
+
+        let rows = get_assets_at_location(&pool, 60001099, 1).await.unwrap();
+        assert_eq!(rows.len(), 1, "same type should be grouped into one row");
+        assert_eq!(rows[0].quantity, 700);
+    }
+
+    #[tokio::test]
+    async fn test_assets_at_location_resolves_type_name() {
+        let pool = setup().await;
+        upsert_character(&pool, &test_char(1)).await.unwrap();
+        sqlx::query("INSERT INTO sde_types (type_id, type_name) VALUES (34, 'Tritanium')")
+            .execute(&pool).await.unwrap();
+        insert_asset(&pool, 1, 1, 34, 60001099, "Hangar", 100, false).await;
+
+        let rows = get_assets_at_location(&pool, 60001099, 1).await.unwrap();
+        assert_eq!(rows[0].type_name, "Tritanium");
+    }
+
+    #[tokio::test]
+    async fn test_assets_at_location_falls_back_type_id() {
+        let pool = setup().await;
+        upsert_character(&pool, &test_char(1)).await.unwrap();
+        insert_asset(&pool, 1, 1, 34, 60001099, "Hangar", 100, false).await;
+
+        let rows = get_assets_at_location(&pool, 60001099, 1).await.unwrap();
+        assert_eq!(rows[0].type_name, "34", "unresolved type should fall back to ID");
+    }
+
+    #[tokio::test]
+    async fn test_assets_at_location_only_returns_requested_location() {
+        let pool = setup().await;
+        upsert_character(&pool, &test_char(1)).await.unwrap();
+        insert_asset(&pool, 1, 1, 34, 60001099, "Hangar", 100, false).await;
+        insert_asset(&pool, 2, 1, 35, 60002000, "Hangar", 200, false).await;
+
+        let rows = get_assets_at_location(&pool, 60001099, 1).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].type_id, 34);
+    }
+
+    #[tokio::test]
+    async fn test_assets_at_location_empty_for_wrong_character() {
+        let pool = setup().await;
+        upsert_character(&pool, &test_char(1)).await.unwrap();
+        upsert_character(&pool, &test_char(2)).await.unwrap();
+        insert_asset(&pool, 1, 1, 34, 60001099, "Hangar", 100, false).await;
+
+        let rows = get_assets_at_location(&pool, 60001099, 2).await.unwrap();
+        assert!(rows.is_empty(), "character isolation failed");
+    }
+
+    // ── Multibuy ──────────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_multibuy_lines_sorted_alphabetically() {
+        let pool = setup().await;
+        upsert_character(&pool, &test_char(1)).await.unwrap();
+        sqlx::query("INSERT INTO sde_types (type_id, type_name) VALUES (34,'Tritanium'),(35,'Pyerite')")
+            .execute(&pool).await.unwrap();
+        insert_asset(&pool, 1, 1, 34, 60001099, "Hangar", 1000, false).await;
+        insert_asset(&pool, 2, 1, 35, 60001099, "Hangar", 500, false).await;
+
+        let lines = get_multibuy_lines(&pool, 60001099, 1).await.unwrap();
+        assert_eq!(lines.len(), 2);
+        // Alphabetical: Pyerite before Tritanium
+        assert_eq!(lines[0].0, "Pyerite");
+        assert_eq!(lines[0].1, 500);
+        assert_eq!(lines[1].0, "Tritanium");
+        assert_eq!(lines[1].1, 1000);
+    }
+
+    // ── Structure cache ───────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_cache_structure_insert_and_upsert() {
+        let pool = setup().await;
+        cache_structure(&pool, 1_000_000_000_001, "Perimeter - TTT").await.unwrap();
+        cache_structure(&pool, 1_000_000_000_001, "Perimeter - Updated").await.unwrap();
+
+        let name: String = sqlx::query_scalar("SELECT name FROM structure_cache WHERE id = ?")
+            .bind(1_000_000_000_001i64)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(name, "Perimeter - Updated", "upsert should overwrite name");
+    }
+
+    #[tokio::test]
+    async fn test_uncached_structure_ids_returns_only_missing() {
+        let pool = setup().await;
+        upsert_character(&pool, &test_char(1)).await.unwrap();
+        // Two structure IDs — one cached, one not
+        insert_asset(&pool, 1, 1, 34, 1_000_000_000_001, "Hangar", 1, false).await;
+        insert_asset(&pool, 2, 1, 34, 1_000_000_000_002, "Hangar", 1, false).await;
+        cache_structure(&pool, 1_000_000_000_001, "Known Citadel").await.unwrap();
+
+        let uncached = uncached_structure_ids(&pool, 1).await.unwrap();
+        assert_eq!(uncached.len(), 1);
+        assert_eq!(uncached[0], 1_000_000_000_002i64);
+    }
+
+    #[tokio::test]
+    async fn test_uncached_structure_ids_excludes_npc_stations() {
+        let pool = setup().await;
+        upsert_character(&pool, &test_char(1)).await.unwrap();
+        // NPC station — should NOT appear in uncached list (id < 1T)
+        insert_asset(&pool, 1, 1, 34, 60001099, "Hangar", 1, false).await;
+
+        let uncached = uncached_structure_ids(&pool, 1).await.unwrap();
+        assert!(uncached.is_empty(), "NPC stations should not appear in structure cache query");
+    }
+}

@@ -8,11 +8,29 @@ use tokio::net::TcpListener;
 
 use crate::db::{self, Character};
 
-pub const CLIENT_ID: &str = "99de062eccd44b149d8b5075b7b821f4";
-pub const CLIENT_SECRET: &str = "eat_UjjbGgKJ9WWmyDXeHBL9FVznjpncAyJO_oCXJ3";
+/// EVE SSO client ID (public — safe to embed in source).
+/// Override at build time with the `EVE_CLIENT_ID` environment variable.
+pub const CLIENT_ID: &str = if let Some(s) = option_env!("EVE_CLIENT_ID") {
+    s
+} else {
+    "99de062eccd44b149d8b5075b7b821f4"
+};
+
+/// EVE SSO client secret.
+/// **Never commit a live secret here.** Set `EVE_CLIENT_SECRET` at build time:
+///   - CI/CD: stored as a GitHub Actions repository secret
+///   - Local dev: `$env:EVE_CLIENT_SECRET="…"; npm run build:exe`
+///   - Or register your own app at https://developers.eveonline.com/
+pub const CLIENT_SECRET: &str = if let Some(s) = option_env!("EVE_CLIENT_SECRET") {
+    s
+} else {
+    "" // auth will fail gracefully without this; set EVE_CLIENT_SECRET at build time
+};
+
 pub const CALLBACK_PORT: u16 = 57423;
-pub const REDIRECT_URI: &str = "http://localhost:57423/callback";
+pub const REDIRECT_URI: &str  = "http://localhost:57423/callback";
 pub const SCOPES: &str = "publicData esi-universe.read_structures.v1 esi-assets.read_assets.v1 esi-ui.open_window.v1 esi-ui.write_waypoint.v1";
+
 
 // ─── PKCE helpers ─────────────────────────────────────────────────────────────
 
@@ -309,5 +327,191 @@ pub async fn run_callback_listener(
                 }
             }
         }
+    }
+}
+
+// ─── Unit tests ───────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use sha2::{Digest, Sha256};
+
+    // ── PKCE generation ───────────────────────────────────────────────────────
+
+    #[test]
+    fn test_pkce_verifier_is_valid_base64url() {
+        let pkce = generate_pkce();
+        // base64url chars are A-Z a-z 0-9 - _   (no padding)
+        assert!(
+            pkce.verifier.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_'),
+            "verifier contains non-base64url characters: {}",
+            pkce.verifier
+        );
+        assert!(!pkce.verifier.is_empty());
+    }
+
+    #[test]
+    fn test_pkce_challenge_is_sha256_of_verifier() {
+        let pkce = generate_pkce();
+        // Re-derive: SHA-256(verifier_bytes) → base64url
+        let mut hasher = Sha256::new();
+        hasher.update(pkce.verifier.as_bytes());
+        let expected = URL_SAFE_NO_PAD.encode(hasher.finalize());
+        assert_eq!(pkce.challenge, expected);
+    }
+
+    #[test]
+    fn test_pkce_state_is_valid_base64url() {
+        let pkce = generate_pkce();
+        assert!(
+            pkce.state.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_'),
+            "state contains non-base64url characters"
+        );
+        assert!(!pkce.state.is_empty());
+    }
+
+    #[test]
+    fn test_pkce_generates_different_values_each_call() {
+        let a = generate_pkce();
+        let b = generate_pkce();
+        // Astronomically unlikely to collide; if this ever fails, RNG is broken
+        assert_ne!(a.verifier, b.verifier);
+        assert_ne!(a.state, b.state);
+    }
+
+    #[test]
+    fn test_pkce_verifier_minimum_length() {
+        // RFC 7636: code_verifier MUST be 43-128 chars
+        let pkce = generate_pkce();
+        assert!(pkce.verifier.len() >= 43, "verifier too short: {}", pkce.verifier.len());
+        assert!(pkce.verifier.len() <= 128, "verifier too long: {}", pkce.verifier.len());
+    }
+
+    // ── Auth URL construction ─────────────────────────────────────────────────
+
+    #[test]
+    fn test_build_auth_url_contains_response_type() {
+        let pkce = generate_pkce();
+        let url = build_auth_url(&pkce);
+        assert!(url.contains("response_type=code"), "missing response_type: {url}");
+    }
+
+    #[test]
+    fn test_build_auth_url_contains_challenge_method() {
+        let pkce = generate_pkce();
+        let url = build_auth_url(&pkce);
+        assert!(url.contains("code_challenge_method=S256"), "missing S256 method: {url}");
+    }
+
+    #[test]
+    fn test_build_auth_url_contains_state() {
+        let pkce = generate_pkce();
+        let url = build_auth_url(&pkce);
+        assert!(url.contains(&pkce.state), "state not found in URL: {url}");
+    }
+
+    #[test]
+    fn test_build_auth_url_contains_challenge() {
+        let pkce = generate_pkce();
+        let url = build_auth_url(&pkce);
+        assert!(url.contains(&pkce.challenge), "challenge not found in URL: {url}");
+    }
+
+    #[test]
+    fn test_build_auth_url_points_to_eve_login() {
+        let pkce = generate_pkce();
+        let url = build_auth_url(&pkce);
+        assert!(
+            url.starts_with("https://login.eveonline.com/v2/oauth/authorize"),
+            "wrong base URL: {url}"
+        );
+    }
+
+    // ── URL encoding ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_urlencoding_passthrough_safe_chars() {
+        let input = "abcABC0129-_.~";
+        let encoded = urlencoding_encode(input);
+        assert_eq!(encoded, input, "safe chars should pass through unchanged");
+    }
+
+    #[test]
+    fn test_urlencoding_encodes_space() {
+        assert_eq!(urlencoding_encode(" "), "%20");
+    }
+
+    #[test]
+    fn test_urlencoding_encodes_colon_slash() {
+        let encoded = urlencoding_encode("http://example.com/path?a=b");
+        assert!(encoded.contains("%3A"), "colon should be encoded");
+        assert!(encoded.contains("%2F"), "slash should be encoded");
+        assert!(encoded.contains("%3F"), "? should be encoded");
+        assert!(encoded.contains("%3D"), "= should be encoded");
+    }
+
+    #[test]
+    fn test_urlencoding_empty_string() {
+        assert_eq!(urlencoding_encode(""), "");
+    }
+
+    #[test]
+    fn test_urlencoding_encodes_ampersand() {
+        assert_eq!(urlencoding_encode("a&b"), "a%26b");
+    }
+
+    // ── JWT character ID extraction ───────────────────────────────────────────
+
+    fn make_test_jwt(sub: &str) -> String {
+        // Build a minimal JWT: header.payload.sig (sig can be anything for parsing tests)
+        let header = URL_SAFE_NO_PAD.encode(r#"{"alg":"RS256","typ":"JWT"}"#);
+        let payload_json = format!(r#"{{"sub":"{}","exp":9999999999}}"#, sub);
+        let payload = URL_SAFE_NO_PAD.encode(&payload_json);
+        format!("{header}.{payload}.fakesig")
+    }
+
+    #[test]
+    fn test_extract_character_id_valid_sub() {
+        let jwt = make_test_jwt("CHARACTER:EVE:90379793");
+        let result = extract_character_id(&jwt);
+        assert_eq!(result.unwrap(), 90_379_793i64);
+    }
+
+    #[test]
+    fn test_extract_character_id_large_id() {
+        let jwt = make_test_jwt("CHARACTER:EVE:2119604465");
+        assert_eq!(extract_character_id(&jwt).unwrap(), 2_119_604_465i64);
+    }
+
+    #[test]
+    fn test_extract_character_id_not_a_jwt() {
+        assert!(extract_character_id("notajwt").is_err());
+    }
+
+    #[test]
+    fn test_extract_character_id_only_one_part() {
+        assert!(extract_character_id("onlyone").is_err());
+    }
+
+    #[test]
+    fn test_extract_character_id_bad_payload_encoding() {
+        // invalid base64 in payload position
+        assert!(extract_character_id("header.!!!.sig").is_err());
+    }
+
+    #[test]
+    fn test_extract_character_id_missing_sub_field() {
+        let header = URL_SAFE_NO_PAD.encode(r#"{"alg":"RS256"}"#);
+        let payload = URL_SAFE_NO_PAD.encode(r#"{"exp":9999}"#); // no sub
+        let jwt = format!("{header}.{payload}.sig");
+        assert!(extract_character_id(&jwt).is_err());
+    }
+
+    #[test]
+    fn test_extract_character_id_non_numeric_id() {
+        let jwt = make_test_jwt("CHARACTER:EVE:not-a-number");
+        assert!(extract_character_id(&jwt).is_err());
     }
 }
