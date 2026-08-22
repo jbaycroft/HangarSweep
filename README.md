@@ -38,6 +38,7 @@ It surfaces **dead capital** — items sitting in stations and citadels that are
 | 👥 **Multi-character** | Add as many characters as you like; switch between them instantly |
 | 📦 **Full asset sync** | Fetches all pages concurrently, respects ESI error limits |
 | 💰 **Market prices** | Pulled from ESI once per 24 hours, cached locally |
+| 📊 **Jita price comparison** | Streams The Forge order book; shows **Jita Sell** (undercut price) and **Jita Buy** (instant ISK) per item with a ±% delta vs global average |
 | 🏷️ **Auto name resolution** | Item type names + station names resolved automatically via ESI on first sync |
 | 🏰 **Citadel resolution** | Player structure names resolved via authenticated ESI call |
 | 🔄 **Auto token refresh** | Access tokens silently refreshed before any ESI call |
@@ -135,6 +136,7 @@ pub const REDIRECT_URI: &str  = "http://localhost:57423/callback";
 characters      — EVE character auth tokens (id, name, access_token, refresh_token, expiry)
 assets          — Full asset ledger (replaced wholesale on each sync)
 market_prices   — ESI market averages (refreshed every 24h)
+jita_prices     — The Forge order-book aggregates: sell_min + buy_max per type (refreshed every 24h)
 structure_cache — Resolved citadel/upwell names (authenticated ESI)
 sde_types       — Item type names (auto-populated from ESI /universe/names/ on first sync)
 sde_stations    — NPC station names (auto-populated from ESI /universe/names/ on first sync)
@@ -184,6 +186,7 @@ Each **⟳ Sync** runs these steps in order:
 | Step | What happens |
 |---|---|
 | 1. Market prices | `GET /markets/prices/` — fetched once per 24h, skipped if fresh |
+| 1b. Jita prices | `GET /markets/10000002/orders/` — all pages fetched concurrently, aggregated to sell-min & buy-max per type, skipped if fresh |
 | 2. Token refresh | Access token silently refreshed if expiry < 60s |
 | 3. Asset fetch | `GET /characters/{id}/assets/` — all pages fetched concurrently |
 | 4. Structure names | `POST /universe/names/` with citadel IDs — requires auth |
@@ -217,7 +220,7 @@ Each **⟳ Sync** runs these steps in order:
 
 - [ ] Multiple character support in single sync run
 - [ ] Per-location profit/loss history
-- [ ] Jita price comparison (buy vs sell)
+- [x] ~~Jita price comparison (buy vs sell)~~ — shipped in v0.2.0
 - [ ] Structure access error handling (triage inaccessible citadels)
 - [ ] macOS / Linux builds
 

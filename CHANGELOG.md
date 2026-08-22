@@ -12,8 +12,27 @@ Version numbers follow [Semantic Versioning](https://semver.org/).
 ### Planned
 - Multiple character aggregate view
 - Per-location ISK history
-- Jita buy-order price comparison
 - macOS / Linux builds
+
+---
+
+## [0.2.0] — 2026-08-22
+
+### Added
+- **Jita price comparison** — streams The Forge (`10000002`) full order book on every sync (cached 24h); surfaces per-item **Jita Sell** (lowest active sell order) and **Jita Buy** (highest active buy order) in the asset detail panel
+- **Price mode toggle** — three-button switcher in the asset detail header: `ESI Avg` / `Jita Sell` / `Jita Buy`; all totals, values, and unit prices respond instantly to the selection
+- **±% delta column** — when a Jita mode is active, a green/red delta column shows how much higher or lower Jita prices are vs the ESI global average
+- **Contextual hint bar** — brief explanatory text beneath the header describing what each price mode means ("list here to undercut" vs "instant ISK via buy order")
+- **`jita_prices` table** — new SQLite table with `sell_min`, `buy_max`, and `last_updated`; migration `0002_jita_prices.sql` applied automatically on first launch
+- **`esi.rs` — `sync_jita_prices` / `jita_prices_stale`** — concurrent pagination of The Forge orders, O(n) HashMap aggregation, transactional upsert
+- **4 new Rust tests** — `jita_prices` table insert/upsert and join coverage (total: 47 passing)
+- **14 new TypeScript tests** — price mode helper functions, delta computation, no-data sentinel behaviour (total: 34 passing)
+
+### Changed
+- `sync_all` pipeline: step 1b added (Jita price fetch, skipped if fresh)
+- `get_assets_at_location` SQL: LEFT JOIN `jita_prices` on `type_id`
+- `AssetRow` (Rust + TypeScript): new `jita_sell: f64` and `jita_buy: f64` fields
+- Asset detail column layout: adapts between 3 columns (avg mode) and 5 columns (Jita mode)
 
 ---
 
@@ -46,5 +65,6 @@ Version numbers follow [Semantic Versioning](https://semver.org/).
 
 ---
 
-[Unreleased]: https://github.com/jbaycroft/HangarSweep/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/jbaycroft/HangarSweep/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/jbaycroft/HangarSweep/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/jbaycroft/HangarSweep/releases/tag/v0.1.0

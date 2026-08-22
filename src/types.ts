@@ -22,6 +22,10 @@ export interface AssetRow {
   quantity: number;
   estimated_value: number;
   location_flag: string;
+  /** Jita minimum sell-order price per unit (0 = no Jita data) */
+  jita_sell: number;
+  /** Jita maximum buy-order price per unit (0 = no Jita data) */
+  jita_buy: number;
 }
 
 // ─── Event payloads ───────────────────────────────────────────────────────────

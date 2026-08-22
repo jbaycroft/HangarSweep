@@ -87,6 +87,15 @@ pub async fn sync_all(
     }
     emit("market_prices", "complete", None);
 
+    // 1b. Jita order-book prices (only if stale)
+    emit("jita_prices", "running", Some("Fetching Jita prices..."));
+    if esi::jita_prices_stale(&state.db).await {
+        esi::sync_jita_prices(&state.db, &app)
+            .await
+            .map_err(|e| format!("Jita price sync failed: {}", e))?;
+    }
+    emit("jita_prices", "complete", None);
+
     // 2. Ensure valid token
     let access_token = auth::ensure_valid_token(character_id, &state.db)
         .await

@@ -620,3 +620,83 @@ a { color: var(--gold); text-decoration: none; }
   background: rgba(192,57,43,0.08);
   border-bottom: 1px solid rgba(192,57,43,0.2);
 }
+
+/* ─── Jita price comparison — detail header actions ────────────────────────── */
+.detail-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+/* ── Price mode toggle (ESI Avg / Jita Sell / Jita Buy) ─────────────────────── */
+.price-mode-toggle {
+  display: flex;
+  border: 1px solid var(--border-hi);
+  border-radius: 5px;
+  overflow: hidden;
+  background: var(--bg-2);
+}
+.price-mode-btn {
+  background: none;
+  border: none;
+  border-right: 1px solid var(--border-hi);
+  color: var(--text-sec);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 9px;
+  letter-spacing: 0.03em;
+  transition: background 0.1s, color 0.1s;
+  white-space: nowrap;
+}
+.price-mode-btn:last-child { border-right: none; }
+.price-mode-btn:hover:not(.active) {
+  background: var(--bg-3);
+  color: var(--text-pri);
+}
+.price-mode-btn.active {
+  background: var(--bg-3);
+  color: var(--gold-hi);
+  box-shadow: inset 0 -2px 0 var(--gold);
+}
+
+/* ── Jita hint bar ───────────────────────────────────────────────────────────── */
+.jita-hint-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 18px;
+  background: rgba(200, 162, 40, 0.06);
+  border-bottom: 1px solid rgba(200, 162, 40, 0.18);
+  font-size: 11px;
+  color: var(--text-sec);
+  flex-shrink: 0;
+}
+.jita-hint-bar strong { color: var(--gold); }
+.jita-hint-icon { font-size: 14px; }
+.jita-coverage {
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+.jita-no-data {
+  color: var(--text-dim);
+  font-size: 10px;
+  font-style: italic;
+}
+
+/* ── Delta column (vs average) ───────────────────────────────────────────────── */
+.delta-cell {
+  font-family: var(--mono);
+  font-size: 11px;
+}
+.delta-pos { color: var(--green); }
+.delta-neg { color: var(--red); }
+
+/* ── No-data cell ────────────────────────────────────────────────────────────── */
+.no-data {
+  color: var(--text-dim);
+  font-style: italic;
+}
+

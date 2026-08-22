@@ -73,6 +73,170 @@ pub async fn market_prices_stale(pool: &SqlitePool) -> bool {
     }
 }
 
+// ─── Jita (The Forge) order-book prices ──────────────────────────────────────
+//
+// ESI GET /markets/{region_id}/orders/ paginates in pages of 1 000 orders.
+// We stream every page for The Forge (region 10 000 002) and for each type_id
+// track the minimum sell price and the maximum buy price.
+// Results are written into the `jita_prices` table (upserted wholesale).
+
+const FORGE_REGION_ID: i64 = 10_000_002;
+
+pub async fn jita_prices_stale(pool: &SqlitePool) -> bool {
+    let row = sqlx::query("SELECT MAX(last_updated) as lu FROM jita_prices")
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten();
+
+    match row {
+        Some(r) => {
+            let lu: i64 = r.try_get("lu").unwrap_or(0);
+            now_unix() - lu > 86_400
+        }
+        None => true,
+    }
+}
+
+#[derive(Deserialize, Debug)]
+struct EsiOrder {
+    type_id: i64,
+    price: f64,
+    is_buy_order: bool,
+}
+
+/// Fetch every page of The Forge market orders and aggregate per-type sell-min
+/// and buy-max prices, then upsert into `jita_prices`.
+pub async fn sync_jita_prices(pool: &SqlitePool, app: &tauri::AppHandle) -> Result<()> {
+    use std::collections::{HashMap, HashSet};
+
+    let client = Client::new();
+    let base = format!(
+        "https://esi.evetech.net/latest/markets/{}/orders/?datasource=tranquility&order_type=all&page=",
+        FORGE_REGION_ID
+    );
+
+    // ── Page 1: discover total page count ────────────────────────────────────
+    let _ = app.emit(
+        "sync-progress",
+        serde_json::json!({
+            "step": "jita_prices",
+            "status": "running",
+            "message": "Fetching Jita order book (page 1)…"
+        }),
+    );
+
+    let resp = client
+        .get(format!("{}1", base))
+        .header("Accept", "application/json")
+        .send()
+        .await?
+        .error_for_status()?;
+
+    let x_pages: u32 = resp
+        .headers()
+        .get("x-pages")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1);
+
+    let mut all_orders: Vec<EsiOrder> = resp.json().await?;
+
+    // ── Pages 2..x_pages: concurrent fetch ───────────────────────────────────
+    if x_pages > 1 {
+        let _ = app.emit(
+            "sync-progress",
+            serde_json::json!({
+                "step": "jita_prices",
+                "status": "running",
+                "message": format!("Fetching Jita order book ({} pages)…", x_pages)
+            }),
+        );
+
+        let mut join_set: JoinSet<Result<Vec<EsiOrder>>> = JoinSet::new();
+        for page in 2..=x_pages {
+            let c = client.clone();
+            let url = format!("{}{}", base, page);
+            join_set.spawn(async move {
+                let orders: Vec<EsiOrder> = c
+                    .get(&url)
+                    .header("Accept", "application/json")
+                    .send()
+                    .await?
+                    .error_for_status()?
+                    .json()
+                    .await?;
+                Ok(orders)
+            });
+        }
+
+        while let Some(result) = join_set.join_next().await {
+            match result {
+                Ok(Ok(page_orders)) => all_orders.extend(page_orders),
+                Ok(Err(e)) => eprintln!("[esi] jita page fetch error: {}", e),
+                Err(e) => eprintln!("[esi] jita join error: {}", e),
+            }
+        }
+    }
+
+    // ── Aggregate: per type_id find sell_min and buy_max ─────────────────────
+    let _ = app.emit(
+        "sync-progress",
+        serde_json::json!({
+            "step": "jita_prices",
+            "status": "running",
+            "message": format!("Aggregating {} Jita orders…", all_orders.len())
+        }),
+    );
+
+    let mut sell_min: HashMap<i64, f64> = HashMap::new();
+    let mut buy_max: HashMap<i64, f64> = HashMap::new();
+
+    for order in &all_orders {
+        if order.is_buy_order {
+            let entry = buy_max.entry(order.type_id).or_insert(0.0);
+            if order.price > *entry {
+                *entry = order.price;
+            }
+        } else {
+            let entry = sell_min.entry(order.type_id).or_insert(f64::MAX);
+            if order.price < *entry {
+                *entry = order.price;
+            }
+        }
+    }
+
+    // ── Upsert into jita_prices ───────────────────────────────────────────────
+    let now = now_unix();
+    let mut tx = pool.begin().await?;
+
+    let mut all_type_ids: HashSet<i64> = HashSet::new();
+    all_type_ids.extend(sell_min.keys().copied());
+    all_type_ids.extend(buy_max.keys().copied());
+
+    for type_id in all_type_ids {
+        let sell = sell_min.get(&type_id).copied().unwrap_or(0.0);
+        let sell = if sell == f64::MAX { 0.0 } else { sell };
+        let buy = buy_max.get(&type_id).copied().unwrap_or(0.0);
+
+        sqlx::query(
+            "INSERT INTO jita_prices (type_id, sell_min, buy_max, last_updated) \
+             VALUES (?, ?, ?, ?) \
+             ON CONFLICT(type_id) DO UPDATE SET \
+             sell_min=excluded.sell_min, buy_max=excluded.buy_max, last_updated=excluded.last_updated",
+        )
+        .bind(type_id)
+        .bind(sell)
+        .bind(buy)
+        .bind(now)
+        .execute(&mut *tx)
+        .await?;
+    }
+
+    tx.commit().await?;
+    Ok(())
+}
+
 // ─── Asset sync ───────────────────────────────────────────────────────────────
 
 #[derive(Deserialize, Debug)]

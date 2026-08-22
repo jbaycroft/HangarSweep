@@ -29,6 +29,10 @@ pub struct AssetRow {
     pub quantity: i64,
     pub estimated_value: f64,
     pub location_flag: String,
+    /// Jita minimum sell-order price per unit (0.0 = no Jita data)
+    pub jita_sell: f64,
+    /// Jita maximum buy-order price per unit (0.0 = no Jita data)
+    pub jita_buy: f64,
 }
 
 // ─── Init ─────────────────────────────────────────────────────────────────────
@@ -167,10 +171,13 @@ pub async fn get_assets_at_location(
             COALESCE(t.type_name, CAST(a.type_id AS TEXT)) AS type_name,
             CAST(SUM(a.quantity) AS INTEGER) AS quantity,
             CAST(SUM(a.quantity * COALESCE(m.average_price, 0.0)) AS REAL) AS estimated_value,
-            a.location_flag
+            a.location_flag,
+            COALESCE(j.sell_min, 0.0) AS jita_sell,
+            COALESCE(j.buy_max,  0.0) AS jita_buy
         FROM assets a
         LEFT JOIN sde_types     t ON a.type_id = t.type_id
         LEFT JOIN market_prices m ON a.type_id = m.type_id
+        LEFT JOIN jita_prices   j ON a.type_id = j.type_id
         WHERE a.character_id = ? AND a.location_id = ?
           AND a.location_flag NOT IN (
               'Fitted','RigSlot0','RigSlot1','RigSlot2','RigSlot3',
@@ -628,4 +635,95 @@ mod tests {
         let uncached = uncached_structure_ids(&pool, 1).await.unwrap();
         assert!(uncached.is_empty(), "NPC stations should not appear in structure cache query");
     }
+
+    // ── Jita price comparison ─────────────────────────────────────────────────
+
+    /// Insert a Jita price row for testing.
+    async fn insert_jita_price(pool: &SqlitePool, type_id: i64, sell_min: f64, buy_max: f64) {
+        sqlx::query(
+            "INSERT INTO jita_prices (type_id, sell_min, buy_max, last_updated) \
+             VALUES (?, ?, ?, 0) \
+             ON CONFLICT(type_id) DO UPDATE SET sell_min=excluded.sell_min, buy_max=excluded.buy_max",
+        )
+        .bind(type_id)
+        .bind(sell_min)
+        .bind(buy_max)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_assets_at_location_includes_jita_prices() {
+        let pool = setup().await;
+        upsert_character(&pool, &test_char(1)).await.unwrap();
+        sqlx::query("INSERT INTO sde_types (type_id, type_name) VALUES (34, 'Tritanium')")
+            .execute(&pool).await.unwrap();
+        insert_price(&pool, 34, 5.0).await;
+        insert_jita_price(&pool, 34, 6.50, 5.80).await;
+        insert_asset(&pool, 1, 1, 34, 60001099, "Hangar", 1000, false).await;
+
+        let rows = get_assets_at_location(&pool, 60001099, 1).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert!((rows[0].jita_sell - 6.50).abs() < 0.001, "jita_sell should be 6.50");
+        assert!((rows[0].jita_buy  - 5.80).abs() < 0.001, "jita_buy should be 5.80");
+        // estimated_value still uses market average
+        assert!((rows[0].estimated_value - 5000.0).abs() < 0.01);
+    }
+
+    #[tokio::test]
+    async fn test_assets_at_location_jita_zero_when_no_jita_data() {
+        let pool = setup().await;
+        upsert_character(&pool, &test_char(1)).await.unwrap();
+        insert_price(&pool, 34, 10.0).await;
+        // Intentionally do NOT insert a jita_prices row
+        insert_asset(&pool, 1, 1, 34, 60001099, "Hangar", 100, false).await;
+
+        let rows = get_assets_at_location(&pool, 60001099, 1).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].jita_sell, 0.0, "jita_sell should fall back to 0.0");
+        assert_eq!(rows[0].jita_buy,  0.0, "jita_buy should fall back to 0.0");
+    }
+
+    #[tokio::test]
+    async fn test_jita_prices_upsert() {
+        let pool = setup().await;
+        insert_jita_price(&pool, 34, 10.0, 9.0).await;
+        // Upsert with new prices
+        insert_jita_price(&pool, 34, 11.5, 9.5).await;
+
+        let (sell, buy): (f64, f64) =
+            sqlx::query_as("SELECT sell_min, buy_max FROM jita_prices WHERE type_id = 34")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert!((sell - 11.5).abs() < 0.001, "upsert should update sell_min");
+        assert!((buy  -  9.5).abs() < 0.001, "upsert should update buy_max");
+    }
+
+    #[tokio::test]
+    async fn test_assets_at_location_jita_on_multiple_types() {
+        let pool = setup().await;
+        upsert_character(&pool, &test_char(1)).await.unwrap();
+        sqlx::query("INSERT INTO sde_types (type_id, type_name) VALUES (34,'Tritanium'),(35,'Pyerite')")
+            .execute(&pool).await.unwrap();
+        insert_price(&pool, 34, 5.0).await;
+        insert_price(&pool, 35, 8.0).await;
+        insert_jita_price(&pool, 34, 5.5, 4.9).await;
+        // type 35 has no Jita data — should default to 0.0
+        insert_asset(&pool, 1, 1, 34, 60001099, "Hangar", 100, false).await;
+        insert_asset(&pool, 2, 1, 35, 60001099, "Hangar", 200, false).await;
+
+        let rows = get_assets_at_location(&pool, 60001099, 1).await.unwrap();
+        assert_eq!(rows.len(), 2);
+
+        let trit = rows.iter().find(|r| r.type_id == 34).unwrap();
+        let pye  = rows.iter().find(|r| r.type_id == 35).unwrap();
+
+        assert!((trit.jita_sell - 5.5).abs() < 0.001);
+        assert!((trit.jita_buy  - 4.9).abs() < 0.001);
+        assert_eq!(pye.jita_sell, 0.0);
+        assert_eq!(pye.jita_buy,  0.0);
+    }
 }
+
