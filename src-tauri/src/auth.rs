@@ -100,16 +100,18 @@ struct TokenResponse {
 pub async fn exchange_code(code: &str, verifier: &str) -> Result<(String, String, i64)> {
     let client = reqwest::Client::new();
 
-    let credentials = URL_SAFE_NO_PAD.encode(format!("{}:{}", CLIENT_ID, CLIENT_SECRET).as_bytes());
-
+    // EVE SSO PKCE flow for native/desktop apps:
+    // client_id goes in the POST body — NO Authorization header, NO client secret.
+    // Ref: https://developers.eveonline.com/docs/services/sso/
     let resp = client
         .post("https://login.eveonline.com/v2/oauth/token")
-        .header("Authorization", format!("Basic {}", credentials))
         .header("Content-Type", "application/x-www-form-urlencoded")
+        .header("Host", "login.eveonline.com")
         .body(format!(
-            "grant_type=authorization_code&code={}&redirect_uri={}&code_verifier={}",
+            "grant_type=authorization_code&code={}&redirect_uri={}&client_id={}&code_verifier={}",
             code,
             urlencoding_encode(REDIRECT_URI),
+            CLIENT_ID,
             verifier,
         ))
         .send()
@@ -126,15 +128,19 @@ pub async fn exchange_code(code: &str, verifier: &str) -> Result<(String, String
     Ok((token.access_token, token.refresh_token, expiry))
 }
 
-pub async fn refresh_token(refresh_token: &str) -> Result<(String, String, i64)> {
+pub async fn refresh_token(refresh_tok: &str) -> Result<(String, String, i64)> {
     let client = reqwest::Client::new();
-    let credentials = URL_SAFE_NO_PAD.encode(format!("{}:{}", CLIENT_ID, CLIENT_SECRET).as_bytes());
 
+    // Same PKCE native-app flow for refresh — client_id in body, no secret.
     let resp = client
         .post("https://login.eveonline.com/v2/oauth/token")
-        .header("Authorization", format!("Basic {}", credentials))
         .header("Content-Type", "application/x-www-form-urlencoded")
-        .body(format!("grant_type=refresh_token&refresh_token={}", refresh_token))
+        .header("Host", "login.eveonline.com")
+        .body(format!(
+            "grant_type=refresh_token&refresh_token={}&client_id={}",
+            refresh_tok,
+            CLIENT_ID,
+        ))
         .send()
         .await?
         .error_for_status()?;
